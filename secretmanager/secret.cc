@@ -17,12 +17,21 @@ using google::cloud::secretmanager::v1::SecretManagerService;
 
 int main(int argc, char** argv){
 
-  auto creds = grpc::GoogleDefaultCredentials();
-  auto channel = grpc::CreateChannel("secretmanager.googleapis.com", creds);
+  bool verbose = false;
+  std::string project_numeric_id;
 
-  std::unique_ptr<SecretManagerService::Stub> secretmanager( SecretManagerService::NewStub(channel));
+  // FIXME, logger, log level, etc.
+  for(int iarg=1; iarg < argc; ++iarg){
+    std::string arg( argv[iarg]);
+    if ( arg == "-v" || arg == "--verbose"){
+      verbose = true;
+    }
+  }
 
-  ListSecretsRequest request;
+  google::protobuf::util::JsonPrintOptions options;
+  options.add_whitespace = true;
+  options.always_print_primitive_fields = true;
+  options.preserve_proto_field_names = true;
 
   std::cout.flush();
   // FIXME : does grcp wrap this ? do I need to write it with libcpr
@@ -30,18 +39,30 @@ int main(int argc, char** argv){
   std::system("curl -sL -H 'Metadata-Flavor: Google' 'http://169.254.169.254/computeMetadata/v1/project/numeric-project-id' > projectid.txt");
   
   std::ostringstream oss;
-  oss <<  "projects/" <<  std::ifstream("projectid.txt").rdbuf();
+  oss <<  std::ifstream("projectid.txt").rdbuf();
+  std::system( "rm -rf projectid.txt");
 
-  request.set_parent( oss.str());
-  
+  project_numeric_id = oss.str();
+
+
+  auto creds = grpc::GoogleDefaultCredentials();
+  auto channel = grpc::CreateChannel("secretmanager.googleapis.com", creds);
+
+  std::unique_ptr<SecretManagerService::Stub> secretmanager( SecretManagerService::NewStub(channel));
+
+  ListSecretsRequest request;
+
+  // FIXME: strcat
+  std::string parent = "projects/";
+  parent += project_numeric_id;
+  request.set_parent( std::move( parent) );
+
+  // FIXME: idiomiatic way of doing paged outputs
+  // FIXME: idiomatic way to move parts of response protos into the next query
+  //        without too much memory allocations.
+
   grpc::ClientContext ctx;
   
-  bool verbose = true;
-  google::protobuf::util::JsonPrintOptions options;
-  options.add_whitespace = true;
-  options.always_print_primitive_fields = true;
-  options.preserve_proto_field_names = true;
-
   bool goon = false;
   do {
     ListSecretsResponse response;
@@ -57,17 +78,12 @@ int main(int argc, char** argv){
       auto * s = response.mutable_secrets(i);
 
       if ( verbose ){
-	// Create a json_string from sr.
-	
 	std::string json_string;
 	MessageToJsonString(*s, &json_string, options);
-	
-	// Print json_string.
 	std::cout << json_string << std::endl;
       }
 
       ListSecretVersionsRequest vrequest;
-
       ListSecretVersionsResponse vresponse;
       
       vrequest.set_allocated_parent(s->release_name());
@@ -87,11 +103,8 @@ int main(int argc, char** argv){
 	    if ( verbose ){
 	      std::string json_string;
 	      MessageToJsonString( *version, &json_string, options);
-	      
-	      // Print json_string.
 	      std::cout << json_string << std::endl;
 	    }
-	    // request the content.
 	    grpc::ClientContext ctx;
 	    AccessSecretVersionRequest arequest;
 	    AccessSecretVersionResponse aresponse;
@@ -100,13 +113,16 @@ int main(int argc, char** argv){
 	    
 	    rpc_status = secretmanager->AccessSecretVersion( &ctx, arequest, &aresponse);
 	    
-	    //for this to work your default credentials / service account must have secret acessor permissions.
+	    //for this to work your default credentials / service account must have secret accessor permissions.
 	    // otherwise it will fail...
+	    // either add to default service account, use another service account, ...
 	    if ( !rpc_status.ok()){
 	      std::cerr << "AccessSecretVersion for " << arequest.name() << "  failed with " << rpc_status.error_message() << std::endl;
 	    } else {
 	      if ( aresponse.has_payload()){
-		  std::cout << "payload\n"  << aresponse.payload().data() << std::endl;
+		if ( verbose ) std::cout << "Payload\n";
+
+		std::cout << aresponse.payload().data() << std::endl;
 	      }
 	    }
 	  }
